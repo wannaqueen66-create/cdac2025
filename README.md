@@ -109,6 +109,24 @@ python scripts/train_sa_img2img_gan.py \
 
 ---
 
+## 预处理：裁剪屋顶白边并同步裁热力图 / Preprocess: crop roof white margins and sync-crop heatmaps
+
+脚本 / Script：`scripts/preprocess_dataset.py`
+
+示例 / Example：
+```bash
+python scripts/preprocess_dataset.py \
+  --data_root /path/to/DATA_ROOT \
+  --out_root /path/to/DATA_ROOT_CROPPED \
+  --out_size 512 \
+  --white_thresh 245 \
+  --pad 16
+```
+
+然后训练时把 `--data_root` 指向裁剪后的目录。
+
+Then point training `--data_root` to the cropped directory.
+
 ## 输出与产物 / Outputs
 
 - ControlNet：
