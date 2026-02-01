@@ -1,0 +1,15 @@
+# Core
+torch>=2.1
+torchvision>=0.16
+accelerate>=0.26
+numpy
+pillow
+tqdm
+
+# ControlNet / Stable Diffusion (Diffusers)
+diffusers>=0.27
+transformers>=4.38
+safetensors
+
+# Logging
+wandb
