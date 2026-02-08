@@ -80,7 +80,9 @@ python scripts/train_sa_img2img_gan.py \
   --batch_size 2 \
   --lr 2e-4 \
   --epochs 200 \
-  --seed 42
+  --seed 42 \
+  --val_ratio 0.2 \
+  --split_seed 42
 ```
 
 **Option B: ControlNet（Stable Diffusion）**
@@ -96,7 +98,9 @@ accelerate launch scripts/train_controlnet.py \
   --max_train_steps 2000 \
   --validation_steps 200 \
   --prompt "a roof plan" \
-  --seed 42
+  --seed 42 \
+  --val_ratio 0.2 \
+  --split_seed 42
 ```
 
 ---
@@ -164,11 +168,17 @@ The script:
 ### ControlNet
 - `outputs/controlnet_roof/controlnet_step_*/`：阶段 checkpoint
 - `outputs/controlnet_roof/controlnet_final/`：最终权重
-- `outputs/controlnet_roof/validation/`：验证生成图
+- `outputs/controlnet_roof/validation/`：固定验证集生成图
+- `outputs/controlnet_roof/val_split.txt`：固定验证集样本名
+- `outputs/controlnet_roof/metrics.csv`：自动评估指标（L1 / PSNR / SSIM）
+- `outputs/controlnet_roof/train_config.json`：训练配置与 git commit
 
 ### SA-Img2Img
 - `outputs/sagan_roof/checkpoints/`：训练 checkpoint（`.pt`）
 - `outputs/sagan_roof/samples/`：采样图（conditioning / fake / real 三列）
+- `outputs/sagan_roof/val_split.txt`：固定验证集样本名
+- `outputs/sagan_roof/metrics.csv`：自动评估指标（L1 / PSNR / SSIM）
+- `outputs/sagan_roof/train_config.json`：训练配置与 git commit
 
 ---
 

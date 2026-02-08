@@ -1,6 +1,7 @@
 import os
+import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image
 import torch
@@ -56,17 +57,44 @@ def discover_pairs(data_root: str, heatmap_subdir: str = "heatmap", roof_subdir:
     return pairs
 
 
+def split_pairs(
+    pairs: Sequence[PairedPaths],
+    val_ratio: float = 0.2,
+    seed: int = 42,
+    val_names: Optional[Sequence[str]] = None,
+) -> Tuple[List[PairedPaths], List[PairedPaths]]:
+    if val_names is not None:
+        val_set = set(val_names)
+        train = [p for p in pairs if p.name not in val_set]
+        val = [p for p in pairs if p.name in val_set]
+        if not val:
+            raise ValueError("val_names provided but no matching samples found")
+        if not train:
+            raise ValueError("val_names consumed all samples; no train set left")
+        return train, val
+
+    pairs = list(pairs)
+    rnd = random.Random(seed)
+    rnd.shuffle(pairs)
+    n_val = max(1, int(round(len(pairs) * val_ratio)))
+    n_val = min(n_val, len(pairs) - 1)
+    val = pairs[:n_val]
+    train = pairs[n_val:]
+    return train, val
+
+
 class PairedImageDataset(Dataset):
     def __init__(
         self,
-        data_root: str,
+        data_root: Optional[str],
         image_size: int,
         heatmap_subdir: str = "heatmap",
         roof_subdir: str = "roof",
         random_flip: bool = True,
         normalize_to_minus1_1: bool = True,
+        pairs: Optional[Sequence[PairedPaths]] = None,
     ):
-        self.pairs = discover_pairs(data_root, heatmap_subdir, roof_subdir)
+        self.pairs = list(pairs) if pairs is not None else discover_pairs(data_root, heatmap_subdir, roof_subdir)
         self.image_size = image_size
 
         tfms = [

@@ -1,23 +1,11 @@
-"""Train ControlNet for heatmap -> roof plan (paired).
-
-This script is a compact wrapper around Diffusers components. It fine-tunes a
-ControlNet on a small paired dataset where:
-- conditioning image: heatmap
-- target image: roof plan
-
-For small data (40 pairs), treat this as a starting point:
-- keep learning rate low
-- consider fewer steps and frequent validation
-- consider freezing more components (by default we train ControlNet only)
-
-Notes:
-- You still need a text prompt. Use a fixed prompt like "a roof plan".
-"""
+"""Train ControlNet for heatmap -> roof plan (paired) with fixed validation split and metrics."""
 
 import argparse
-import os
+import csv
+import json
 import math
-import random
+import os
+import subprocess
 
 import numpy as np
 import torch
@@ -35,8 +23,17 @@ from diffusers import (
 )
 from diffusers.optimization import get_scheduler
 from transformers import CLIPTextModel, CLIPTokenizer
+from torchvision.transforms.functional import to_tensor
 
-from common_dataset import PairedImageDataset
+from common_dataset import PairedImageDataset, discover_pairs, split_pairs
+from metrics import l1 as metric_l1, psnr as metric_psnr, ssim_global
+
+
+def get_git_commit():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
 
 
 def parse_args():
@@ -55,28 +52,49 @@ def parse_args():
     p.add_argument("--prompt", type=str, default="a roof plan")
     p.add_argument("--mixed_precision", type=str, default="fp16", choices=["no", "fp16", "bf16"])
     p.add_argument("--num_workers", type=int, default=2)
+    p.add_argument("--val_ratio", type=float, default=0.2)
+    p.add_argument("--split_seed", type=int, default=42)
     return p.parse_args()
 
 
 @torch.no_grad()
-def log_validation(accelerator: Accelerator, pipe: StableDiffusionControlNetPipeline, batch, step: int, out_dir: str):
+def run_validation_and_metrics(
+    accelerator: Accelerator,
+    pipe: StableDiffusionControlNetPipeline,
+    val_batch,
+    prompt: str,
+    step: int,
+    out_dir: str,
+):
     pipe = pipe.to(accelerator.device)
     pipe.set_progress_bar_config(disable=True)
 
-    cond = batch["conditioning"]
-    # dataset returns [-1,1], pipeline expects PIL or [0,1] tensor; convert
+    cond = val_batch["conditioning"].to(accelerator.device)
+    real = val_batch["target"].to(accelerator.device)
+
     cond_01 = (cond * 0.5 + 0.5).clamp(0, 1)
+    real_01 = (real * 0.5 + 0.5).clamp(0, 1)
 
     images = pipe(
-        prompt=["a roof plan"] * cond_01.shape[0],
+        prompt=[prompt] * cond_01.shape[0],
         image=cond_01,
         num_inference_steps=30,
         guidance_scale=7.0,
     ).images
 
     os.makedirs(os.path.join(out_dir, "validation"), exist_ok=True)
+    pred_tensors = []
     for i, im in enumerate(images):
         im.save(os.path.join(out_dir, "validation", f"step_{step:06d}_{i}.png"))
+        pred_tensors.append(to_tensor(im).to(accelerator.device))
+
+    pred = torch.stack(pred_tensors, dim=0).clamp(0, 1)
+
+    return {
+        "l1": metric_l1(pred, real_01).item(),
+        "psnr": metric_psnr(pred, real_01).item(),
+        "ssim": ssim_global(pred, real_01).item(),
+    }
 
 
 def main():
@@ -90,30 +108,60 @@ def main():
 
     set_seed(args.seed)
 
+    if accelerator.is_main_process:
+        pairs = discover_pairs(args.data_root)
+        train_pairs, val_pairs = split_pairs(pairs, val_ratio=args.val_ratio, seed=args.split_seed)
+        with open(os.path.join(args.output_dir, "val_split.txt"), "w", encoding="utf-8") as f:
+            for p in val_pairs:
+                f.write(p.name + "\n")
+        with open(os.path.join(args.output_dir, "train_config.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "args": vars(args),
+                    "git_commit": get_git_commit(),
+                    "num_total": len(pairs),
+                    "num_train": len(train_pairs),
+                    "num_val": len(val_pairs),
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+        with open(os.path.join(args.output_dir, "metrics.csv"), "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["step", "train_loss", "val_l1", "val_psnr", "val_ssim"])
+    else:
+        train_pairs, val_pairs = [], []
+
+    # broadcast split from main process
+    train_pairs = accelerator.gather_for_metrics(train_pairs) if False else train_pairs
+
     tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder")
     vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
     unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
 
-    # Initialize ControlNet from the UNet weights (common starting point)
     controlnet = ControlNetModel.from_unet(unet)
-
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
-    # Freeze everything except ControlNet
     unet.requires_grad_(False)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
-
     controlnet.train()
 
-    ds = PairedImageDataset(args.data_root, image_size=args.resolution, random_flip=True)
-    dl = DataLoader(ds, batch_size=args.train_batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True)
+    # rebuild split on each process deterministically
+    pairs = discover_pairs(args.data_root)
+    train_pairs, val_pairs = split_pairs(pairs, val_ratio=args.val_ratio, seed=args.split_seed)
 
-    # Optimizer
+    train_ds = PairedImageDataset(None, image_size=args.resolution, random_flip=True, pairs=train_pairs)
+    val_ds = PairedImageDataset(None, image_size=args.resolution, random_flip=False, pairs=val_pairs)
+
+    dl = DataLoader(train_ds, batch_size=args.train_batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=min(args.train_batch_size, len(val_ds)), shuffle=False, num_workers=args.num_workers, drop_last=False)
+    val_batch = next(iter(val_dl))
+
     optimizer = torch.optim.AdamW(controlnet.parameters(), lr=args.learning_rate)
 
-    # LR scheduler
     num_update_steps_per_epoch = math.ceil(len(dl) / args.gradient_accumulation_steps)
     num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
     lr_scheduler = get_scheduler(
@@ -123,10 +171,8 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
-    # Prepare
     controlnet, optimizer, dl, lr_scheduler = accelerator.prepare(controlnet, optimizer, dl, lr_scheduler)
 
-    # text embeddings for fixed prompt
     text_inputs = tokenizer(
         [args.prompt],
         padding="max_length",
@@ -139,27 +185,22 @@ def main():
 
     global_step = 0
 
-    for epoch in range(num_train_epochs):
-        for step, batch in enumerate(dl):
+    for _epoch in range(num_train_epochs):
+        for _step, batch in enumerate(dl):
             with accelerator.accumulate(controlnet):
                 cond = batch["conditioning"].to(accelerator.device)
                 target = batch["target"].to(accelerator.device)
 
-                # VAE encode target images to latents
                 with torch.no_grad():
                     latents = vae.encode(target).latent_dist.sample() * vae.config.scaling_factor
 
-                # sample noise & timesteps
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
                 timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device).long()
-
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                # ControlNet expects conditioning image in [0,1]; our dataset is [-1,1]
                 cond_01 = (cond * 0.5 + 0.5).clamp(0, 1)
 
-                # ControlNet forward
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,
@@ -168,7 +209,6 @@ def main():
                     return_dict=False,
                 )
 
-                # UNet forward (frozen) to predict noise
                 with torch.no_grad():
                     model_pred = unet(
                         noisy_latents,
@@ -190,18 +230,34 @@ def main():
                 accelerator.print(f"step {global_step}: loss={loss.detach().float().item():.4f}")
 
             if accelerator.is_main_process and global_step % args.validation_steps == 0 and global_step > 0:
-                # create pipeline for validation
                 pipe = StableDiffusionControlNetPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     controlnet=accelerator.unwrap_model(controlnet),
                     safety_checker=None,
                 )
-                pipe = pipe.to(accelerator.device)
-                log_validation(accelerator, pipe, batch, global_step, args.output_dir)
+                metrics = run_validation_and_metrics(
+                    accelerator=accelerator,
+                    pipe=pipe,
+                    val_batch=val_batch,
+                    prompt=args.prompt,
+                    step=global_step,
+                    out_dir=args.output_dir,
+                )
+                accelerator.print(
+                    f"[val] step={global_step} l1={metrics['l1']:.4f} psnr={metrics['psnr']:.2f} ssim={metrics['ssim']:.4f}"
+                )
+                with open(os.path.join(args.output_dir, "metrics.csv"), "a", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    w.writerow([
+                        global_step,
+                        f"{loss.detach().float().item():.6f}",
+                        f"{metrics['l1']:.6f}",
+                        f"{metrics['psnr']:.6f}",
+                        f"{metrics['ssim']:.6f}",
+                    ])
                 del pipe
 
             if accelerator.is_main_process and global_step % 500 == 0 and global_step > 0:
-                # save checkpoint
                 save_path = os.path.join(args.output_dir, f"controlnet_step_{global_step:06d}")
                 accelerator.unwrap_model(controlnet).save_pretrained(save_path)
 
