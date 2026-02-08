@@ -10,6 +10,7 @@ Goal: Train models for **heatmap → roof plan** image-to-image translation (pai
 
 - [项目概览 / Overview](#项目概览--overview)
 - [快速开始（推荐流程）/ Quickstart (recommended)](#快速开始推荐流程-quickstart-recommended)
+- [Google Colab 新手教程 / Beginner Colab Guide](#google-colab-新手教程--beginner-colab-guide)
 - [数据格式 / Data Layout](#数据格式--data-layout)
 - [预处理：同步裁剪（强烈推荐）/ Preprocess: synced cropping (recommended)](#预处理同步裁剪强烈推荐-preprocess-synced-cropping-recommended)
 - [训练方案 1：ControlNet（Stable Diffusion）/ Training Option 1: ControlNet (Stable Diffusion)](#训练方案-1controlnetstable-diffusion--training-option-1-controlnet-stable-diffusion)
@@ -102,6 +103,109 @@ accelerate launch scripts/train_controlnet.py \
   --val_ratio 0.2 \
   --split_seed 42
 ```
+
+---
+
+## Google Colab 新手教程 / Beginner Colab Guide
+
+> 适合从零开始。你只需要 Google 账号和浏览器。
+
+### 0) 准备你本地的数据
+先在本地整理为：
+
+```
+DATA_ROOT/
+  heatmap/
+    0001.png
+  roof/
+    0001.png
+```
+
+然后把 `DATA_ROOT` 压缩为 `DATA_ROOT.zip`（里面要直接是 heatmap/roof 两个文件夹）。
+
+### 1) 打开 Colab 并启用 GPU
+1. 打开 <https://colab.research.google.com>
+2. 新建 Notebook
+3. 菜单：`Runtime` → `Change runtime type` → `Hardware accelerator` 选 `GPU`
+
+### 2) 克隆项目并安装依赖
+在 Colab 单元运行：
+
+```bash
+!git clone https://github.com/wannaqueen66-create/cdac2025.git
+%cd cdac2025
+!pip -q install -r requirements.txt
+```
+
+### 3) 上传数据 zip 到 Colab
+左侧文件面板上传 `DATA_ROOT.zip`，然后解压：
+
+```bash
+!mkdir -p /content/data_raw
+!unzip -q /content/DATA_ROOT.zip -d /content/data_raw
+```
+
+> 如果你 zip 后多了一层目录，确认最终路径是：`/content/data_raw/DATA_ROOT/heatmap` 和 `/content/data_raw/DATA_ROOT/roof`。
+
+### 4) 预处理（强烈推荐）
+```bash
+!python scripts/preprocess_dataset.py \
+  --data_root /content/data_raw/DATA_ROOT \
+  --out_root /content/data_cropped \
+  --out_size 512 \
+  --white_thresh 245 \
+  --pad 16
+```
+
+### 5) 先跑 SA-Img2Img（新手推荐）
+```bash
+!python scripts/train_sa_img2img_gan.py \
+  --data_root /content/data_cropped \
+  --out_dir /content/outputs/sagan_roof \
+  --image_size 512 \
+  --batch_size 2 \
+  --lr 2e-4 \
+  --epochs 100 \
+  --seed 42 \
+  --val_ratio 0.2 \
+  --split_seed 42
+```
+
+训练中重点看：
+- `/content/outputs/sagan_roof/samples/`（可视化结果）
+- `/content/outputs/sagan_roof/metrics.csv`（L1/PSNR/SSIM）
+
+### 6) （可选）再跑 ControlNet
+> ControlNet 更吃显存。Colab 免费卡可能要减小 step 或降低验证频率。
+
+```bash
+!accelerate launch scripts/train_controlnet.py \
+  --pretrained_model_name_or_path runwayml/stable-diffusion-v1-5 \
+  --output_dir /content/outputs/controlnet_roof \
+  --data_root /content/data_cropped \
+  --resolution 512 \
+  --train_batch_size 1 \
+  --gradient_accumulation_steps 4 \
+  --learning_rate 1e-5 \
+  --max_train_steps 1000 \
+  --validation_steps 250 \
+  --prompt "a roof plan" \
+  --seed 42 \
+  --val_ratio 0.2 \
+  --split_seed 42
+```
+
+### 7) 下载训练结果到本地
+```bash
+!cd /content && zip -qr outputs.zip outputs
+```
+然后在左侧文件面板下载 `/content/outputs.zip`。
+
+### 8) 常见报错（新手版）
+- **没开 GPU / CUDA 报错**：确认 Runtime 已切到 GPU。
+- **找不到数据目录**：确认解压后路径是否真的有 `heatmap/` 和 `roof/`。
+- **显存不足（OOM）**：先减 `batch_size`，再减 `max_train_steps` 或 `resolution`。
+- **会话断开**：Colab 空闲会断，建议定期把 `/content/outputs` 打包下载。
 
 ---
 
