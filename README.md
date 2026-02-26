@@ -9,6 +9,8 @@ Goal: Train models for **heatmap → roof plan** image-to-image translation (pai
 ## 目录 / Table of Contents
 
 - [项目概览 / Overview](#项目概览--overview)
+- [文档导航 / Docs Navigation](#文档导航--docs-navigation)
+- [已验证环境矩阵 / Tested Environment Matrix](#已验证环境矩阵--tested-environment-matrix)
 - [快速开始（推荐流程）/ Quickstart (recommended)](#快速开始推荐流程-quickstart-recommended)
 - [Google Colab 新手教程 / Beginner Colab Guide](#google-colab-新手教程--beginner-colab-guide)
 - [数据格式 / Data Layout](#数据格式--data-layout)
@@ -38,6 +40,30 @@ This repo provides two training options:
 
 ---
 
+## 文档导航 / Docs Navigation
+
+- README（当前文件）：中英双语总览 + 新手可执行流程。
+- 中文专文：[`docs/项目说明-中文.md`](docs/项目说明-中文.md)（更详细的中文说明、训练建议与排障）。
+
+---
+
+## 已验证环境矩阵 / Tested Environment Matrix
+
+> 建议优先使用以下版本组合，确保可复现性。
+
+| 组件 / Component | 建议版本 / Recommended |
+|---|---|
+| Python | 3.10 / 3.11 |
+| PyTorch | 2.1.x |
+| torchvision | 0.16.x |
+| accelerate | 0.26.x |
+| diffusers | 0.27.x |
+| transformers | 4.38.x |
+| safetensors | 0.4.x |
+| CUDA（如用 GPU） | 11.8 / 12.1 |
+
+---
+
 ## 快速开始（推荐流程）/ Quickstart (recommended)
 
 > 推荐：先做预处理（同步裁剪白边/有效区域），再训练。对小样本非常关键。
@@ -60,7 +86,12 @@ DATA_ROOT/
     0002.png
 ```
 
-### Step 3) 预处理（同步裁剪）/ Preprocess (synced crop)
+### Step 3) 先检查数据配对 / Check pair consistency first
+```bash
+python scripts/check_dataset_pairs.py --data_root /path/to/DATA_ROOT
+```
+
+### Step 4) 预处理（同步裁剪）/ Preprocess (synced crop)
 ```bash
 python scripts/preprocess_dataset.py \
   --data_root /path/to/DATA_ROOT \
@@ -70,7 +101,7 @@ python scripts/preprocess_dataset.py \
   --pad 16
 ```
 
-### Step 4) 训练（任选其一）/ Train (pick one)
+### Step 5) 训练（任选其一）/ Train (pick one)
 
 **Option A: SA-Img2Img GAN（推荐先跑通）**
 ```bash
@@ -147,7 +178,12 @@ DATA_ROOT/
 
 > 如果你 zip 后多了一层目录，确认最终路径是：`/content/data_raw/DATA_ROOT/heatmap` 和 `/content/data_raw/DATA_ROOT/roof`。
 
-### 4) 预处理（强烈推荐）
+### 4) 先检查数据配对
+```bash
+!python scripts/check_dataset_pairs.py --data_root /content/data_raw/DATA_ROOT
+```
+
+### 5) 预处理（强烈推荐）
 ```bash
 !python scripts/preprocess_dataset.py \
   --data_root /content/data_raw/DATA_ROOT \
@@ -157,7 +193,7 @@ DATA_ROOT/
   --pad 16
 ```
 
-### 5) 先跑 SA-Img2Img（新手推荐）
+### 6) 先跑 SA-Img2Img（新手推荐）
 ```bash
 !python scripts/train_sa_img2img_gan.py \
   --data_root /content/data_cropped \
@@ -175,7 +211,7 @@ DATA_ROOT/
 - `/content/outputs/sagan_roof/samples/`（可视化结果）
 - `/content/outputs/sagan_roof/metrics.csv`（L1/PSNR/SSIM）
 
-### 6) （可选）再跑 ControlNet
+### 7) （可选）再跑 ControlNet
 > ControlNet 更吃显存。Colab 免费卡可能要减小 step 或降低验证频率。
 
 ```bash
@@ -195,13 +231,13 @@ DATA_ROOT/
   --split_seed 42
 ```
 
-### 7) 下载训练结果到本地
+### 8) 下载训练结果到本地
 ```bash
 !cd /content && zip -qr outputs.zip outputs
 ```
 然后在左侧文件面板下载 `/content/outputs.zip`。
 
-### 8) 常见报错（新手版）
+### 9) 常见报错（新手版）
 - **没开 GPU / CUDA 报错**：确认 Runtime 已切到 GPU。
 - **找不到数据目录**：确认解压后路径是否真的有 `heatmap/` 和 `roof/`。
 - **显存不足（OOM）**：先减 `batch_size`，再减 `max_train_steps` 或 `resolution`。
