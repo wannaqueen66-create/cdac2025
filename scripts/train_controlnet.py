@@ -209,15 +209,14 @@ def main():
                     return_dict=False,
                 )
 
-                with torch.no_grad():
-                    model_pred = unet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states.repeat(bsz, 1, 1),
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
-                        return_dict=False,
-                    )[0]
+                model_pred = unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states.repeat(bsz, 1, 1),
+                    down_block_additional_residuals=down_block_res_samples,
+                    mid_block_additional_residual=mid_block_res_sample,
+                    return_dict=False,
+                )[0]
 
                 loss = torch.mean((model_pred - noise) ** 2)
 
